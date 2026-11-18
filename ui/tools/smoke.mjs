@@ -1,0 +1,257 @@
+// Spark MD Electron smoke test over CDP (dev tool, not part of the product).
+// Static-serves dist and proxies /api to the worker; drives the REAL electron/main.cjs.
+// Usage: node tools/smoke.mjs [port] [shots-dir]
+import http from "node:http"
+import fs from "node:fs"
+import path from "node:path"
+import { spawn } from "node:child_process"
+
+const PORT = Number(process.argv[2] ?? 8099)
+const SHOTS = process.argv[3] ?? "/tmp/sparkmd-shots"
+const UI = path.resolve(import.meta.dirname, "..", "dist")
+const WORKER = process.env.WORKER_URL ?? "http://127.0.0.1:8100"
+const API = process.env.API_BASE ?? process.env.MOCK_URL ?? WORKER // mock at 8101 or the real worker at 8100
+const SERVE_STATIC = process.env.SERVE_STATIC !== "0"
+const MOCK_MODE = API.includes(":8101") || API.includes(":8102")
+
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".woff2": "font/woff2", ".json": "application/json", ".glb": "model/gltf-binary" }
+
+const server = http.createServer((req, res) => {
+  if (process.env.TRACE) console.log("[http]", req.method, req.url)
+  if (req.url.startsWith("/api/")) {
+    const target = new URL(req.url, API)
+    const up = http.request({ hostname: target.hostname, port: target.port, path: target.pathname + target.search, method: req.method, headers: { ...req.headers, host: target.host } }, (ur) => {
+      if (process.env.TRACE) console.log("[api-res]", req.url, ur.statusCode)
+      res.writeHead(ur.statusCode, ur.headers)
+      ur.pipe(res)
+    })
+    up.on("error", () => {
+      res.writeHead(502)
+      res.end("api down")
+    })
+    req.pipe(up)
+    if (target.pathname === "/api/events") req.socket.setTimeout(0)
+    if (process.env.TRACE) console.log("[api]", req.url, "->", target.href)
+    return
+  }
+  if (!SERVE_STATIC) {
+    res.writeHead(404)
+    return res.end()
+  }
+  const raw = req.url.split("?")[0]
+  const p = raw === "/" ? "/index.html" : raw
+  const file = path.join(UI, p)
+  if (!file.startsWith(UI) || !fs.existsSync(file)) {
+    res.writeHead(404)
+    return res.end("not found")
+  }
+  res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream" })
+  fs.createReadStream(file).pipe(res)
+})
+await new Promise((r) => server.listen(PORT, "127.0.0.1", r))
+console.log("static server on", PORT, "api ->", API)
+
+fs.mkdirSync(SHOTS, { recursive: true })
+const CDP_PORT = Number(process.env.CDP_PORT ?? 9333)
+const electron = process.env.ELECTRON_BIN ?? path.resolve(import.meta.dirname, "..", "node_modules", ".bin", "electron")
+const proc = spawn(electron, [".", `--remote-debugging-port=${CDP_PORT}`, "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"], {
+  cwd: path.resolve(import.meta.dirname, ".."),
+  env: { ...process.env, SPARKMD_UI_URL: SERVE_STATIC ? `http://127.0.0.1:${PORT}/` : WORKER + "/" },
+  stdio: ["ignore", "pipe", "pipe"],
+})
+const logLines = []
+proc.stdout.on("data", (d) => logLines.push(String(d)))
+proc.stderr.on("data", (d) => logLines.push(String(d)))
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+let seq = 0
+const pending = new Map()
+const netUrls = []
+async function connect() {
+  for (let i = 0; i < 60; i++) {
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json()
+      const page = list.find((t) => t.type === "page" && t.url.startsWith("http"))
+      if (page) return page.webSocketDebuggerUrl
+    } catch {
+      /* electron still starting */
+    }
+    await wait(250)
+  }
+  throw new Error("no CDP page; log:\n" + logLines.join(""))
+}
+function send(method, params = {}) {
+  const id = ++seq
+  ws.send(JSON.stringify({ id, method, params }))
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
+}
+async function ev(expression) {
+  const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.text + " " + (r.exceptionDetails.exception?.description ?? ""))
+  return r.result.value
+}
+async function shot(name) {
+  const r = await send("Page.captureScreenshot", { format: "png", fromSurface: true })
+  fs.writeFileSync(path.join(SHOTS, `${name}.png`), Buffer.from(r.data, "base64"))
+}
+async function click(x, y) {
+  for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 })
+}
+async function clickText(text, nth = 0) {
+  const pos = await ev(`(() => { const els=[...document.querySelectorAll('button,[role=tab]')].filter(e=>e.innerText.trim().includes(${JSON.stringify(text)})); const el=els[${nth}]; if(!el) return null; const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
+  if (!pos) return false
+  if (pos) await click(pos.x, pos.y)
+  return !!pos
+}
+
+const wsUrl = await connect()
+const ws = new WebSocket(wsUrl)
+await new Promise((r) => (ws.onopen = r))
+ws.onmessage = (m) => {
+  const msg = JSON.parse(m.data)
+  if (msg.id && pending.has(msg.id)) {
+    const p = pending.get(msg.id)
+    pending.delete(msg.id)
+    msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result)
+  } else if (msg.method === "Network.requestWillBeSent") netUrls.push(msg.params.request.url)
+}
+await send("Runtime.enable")
+await send("Page.enable")
+await send("Network.enable")
+await send("Log.enable")
+const consoleErrors = []
+ws.addEventListener("message", (m) => {
+  const msg = JSON.parse(m.data)
+  if (msg.method === "Runtime.exceptionThrown") consoleErrors.push(msg.params.exceptionDetails.text + " " + (msg.params.exceptionDetails.exception?.description ?? ""))
+})
+await send("Emulation.setDeviceMetricsOverride", { width: Number(process.env.WIDTH ?? 1920), height: Number(process.env.HEIGHT ?? 1080), deviceScaleFactor: 1, mobile: false })
+await wait(4000)
+
+const report = {}
+const consoleLogs = []
+ws.addEventListener("message", (m) => {
+  const msg = JSON.parse(m.data)
+  if (msg.method === "Runtime.consoleAPICalled" && msg.params.type === "error") consoleLogs.push(msg.params.args.map((a) => a.value ?? a.description).join(" "))
+})
+report.debug = await ev("({href: location.href, title: document.title, last: Object.fromEntries(globalThis.__sparkmdLast ?? [])})")
+await ev("document.documentElement.classList.remove('dark')")
+report.bodyStart = await ev("document.body.innerText.slice(0,600)")
+report.rowsHtml = await ev("document.querySelector('tbody')?.innerHTML.slice(0,400) ?? null")
+report.rows = await ev("document.querySelectorAll('tbody tr').length")
+report.disclaimer = await ev("document.body.innerText.includes('Research demo, not for clinical use')")
+report.overflow = await ev("document.documentElement.scrollHeight > window.innerHeight")
+report.vScroll = await ev("document.documentElement.scrollHeight - window.innerHeight")
+report.hScroll = await ev("document.documentElement.scrollWidth - window.innerWidth")
+report.cols = await ev("[...document.querySelectorAll('main div')].filter(d=>getComputedStyle(d).display==='grid').slice(0,3).map(d=>getComputedStyle(d).gridTemplateColumns)")
+await shot("01-worklist")
+
+const hero = await ev(`(() => { const r=[...document.querySelectorAll('tbody tr')].find(r=>r.innerText.includes(${JSON.stringify(process.env.HERO ?? "134503")})); if(!r) return null; const b=r.getBoundingClientRect(); return {x:b.x+120,y:b.y+15} })()`)
+report.heroRow = !!hero
+if (hero) {
+  await click(hero.x, hero.y)
+  await wait(2500)
+}
+report.url = await ev("location.hash")
+report.canvas = await ev("(() => { const c=document.querySelector('canvas'); return c ? [c.width,c.height] : null })()")
+report.camBefore = await ev("(() => { const c=document.querySelector('canvas'); return c ? window.__cam ? window.__cam() : JSON.stringify([c.width,c.height]) : null })()")
+report.dbg = await ev("(() => { const t=document.createElement('canvas'); const g=t.getContext('webgl2'); return {webgl2: !!g, err: document.querySelector('main')?.innerText.includes('3D scene unavailable')} })()")
+report.gl = await ev(`(() => { const c=document.querySelector('canvas'); if(!c) return null; const g=c.getContext('webgl2'); if(!g) return 'no-context'; const d=g.getExtension('WEBGL_debug_renderer_info'); return { renderer: d ? g.getParameter(d.UNMASKED_RENDERER_WEBGL) : g.getParameter(g.RENDERER), vendor: d ? g.getParameter(d.UNMASKED_VENDOR_WEBGL) : g.getParameter(g.VENDOR) } })()`)
+report.studyBody = await ev("document.body.innerText.slice(600,2200)")
+report.colsStudy = await ev("[...document.querySelectorAll('main div')].filter(d=>getComputedStyle(d).display==='grid').slice(0,3).map(d=>getComputedStyle(d).gridTemplateColumns)")
+await shot("02-study")
+
+report.slicesClicked = await clickText("CT slices")
+await wait(900)
+report.sliceImgs = await ev("document.querySelectorAll('img[src*=stack_]').length")
+await shot("03-slices")
+
+report.compareClicked = await clickText("Compare")
+await wait(600)
+await shot("04-compare")
+
+report.slicesBack = await clickText("CT slices")
+await wait(600)
+report.toolbarBack = await clickText("3D anatomy")
+await wait(1200)
+
+// Chat: click a fixed phrase and wait for a streamed answer.
+report.chatClicked = await clickText("Show me the nodule")
+await wait(2500)
+report.chatText = await ev("document.body.innerText.includes('Talk to the scan')")
+report.chatBody = await ev("document.body.innerText.slice(0,600)")
+await shot("05-chat")
+
+// Confirm flow (real worker fixtures): press Confirm if present.
+const confirmBtn = await ev(`(() => { const b=[...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Confirm' && !b.disabled); if(!b) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
+report.confirmBtn = !!confirmBtn
+if (confirmBtn) {
+  await click(confirmBtn.x, confirmBtn.y)
+  await wait(2500)
+  await shot("06-confirmed")
+  report.assessmentText = await ev("document.body.innerText.match(/Lung-RADS [0-9ABX]+/)?.[0] ?? null")
+  report.afterConfirm = await ev("document.body.innerText.slice(700,1800)")
+}
+
+// Mock-only: drop T1 so the hero has a prior + a category change (worklist reorder check).
+if (MOCK_MODE) {
+  report.worklistClick = await ev(`(() => { const a=document.querySelector('aside a[href="#/"]'); if(!a) return false; const r=a.getBoundingClientRect(); window.__wl={x:r.x+r.width/2,y:r.y+r.height/2}; return true })()`)
+  if (report.worklistClick) { const p = await ev("window.__wl"); await click(p.x, p.y) }
+  await wait(700)
+  const dropBtn = await ev(`(() => { const b=[...document.querySelectorAll('button')].find(b=>b.innerText.includes('Drop next scan')); if(!b||b.disabled) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
+  if (dropBtn) await click(dropBtn.x, dropBtn.y)
+  report.dropped = !!dropBtn
+  await wait(8000)
+  report.worklistAfter = await ev("document.querySelector('tbody')?.innerText ?? null")
+  report.hashAfterWorklist = await ev("location.hash")
+  report.tabsAfterWorklist = await ev("[...document.querySelectorAll('[role=tab]')].map(t=>t.innerText.trim())")
+  report.worklistBody = await ev("document.querySelector('main')?.innerText.slice(0,700)")
+  const t1 = await ev(`(() => { const r=[...document.querySelectorAll('tbody tr')].find(r=>r.innerText.includes('T1')); if(!r) return null; const b=r.getBoundingClientRect(); return {x:b.x+120,y:b.y+15} })()`)
+  report.t1Row = !!t1
+  if (t1) { await click(t1.x, t1.y); await wait(2500)
+    const c2 = await ev(`(() => { const b=[...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Confirm' && !b.disabled); if(!b) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
+    if (c2) { await click(c2.x, c2.y); await wait(3000) }
+    const c3 = await ev(`(() => { const b=[...document.querySelectorAll('button')].find(b=>b.innerText.trim()==='Confirm' && !b.disabled); if(!b) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
+    if (c3) { await click(c3.x, c3.y); await wait(3500) }
+    report.t1Assessment = await ev("document.body.innerText.match(/Lung-RADS [0-9ABX]+/)?.[0] ?? null")
+    report.t1Body = await ev("document.querySelector('main')?.innerText.slice(0,900)")
+    await shot("06b-t1")
+  }
+}
+
+// Report sheet + Approve via a real mouse click.
+const reviewPos = await ev(`(() => { const labels=[...document.querySelectorAll('button')].map(b=>b.innerText); window.__labels = labels; const b=[...document.querySelectorAll('button')].find(b=>/Review\\b/.test(b.innerText) || b.innerText.includes('View approved')); if(!b) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2, label: b.innerText} })()`)
+report.labels = await ev("window.__labels")
+report.sheetBtn = !!reviewPos
+if (reviewPos) await click(reviewPos.x, reviewPos.y)
+await wait(900)
+await shot("07-sheet")
+report.sheetBody = await ev("document.body.innerText.slice(-700)")
+const approveBtn = await ev(`(() => { const b=[...document.querySelectorAll('button')].find(b=>/^Approve$/.test(b.innerText.trim())); if(!b) return null; const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,disabled:b.disabled} })()`)
+report.approveBtn = approveBtn ? { ...approveBtn, disabled: !!approveBtn.disabled } : null
+if (approveBtn && !approveBtn.disabled) {
+  await click(approveBtn.x, approveBtn.y)
+  await wait(1500)
+  await shot("08-approved")
+}
+await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+await wait(500)
+
+report.inboxClicked = await ev(`(() => { const a=[...document.querySelectorAll('a[href="#/inbox"]')][0]; if(!a) return false; const r=a.getBoundingClientRect(); window.__inboxPos={x:r.x+r.width/2,y:r.y+r.height/2}; return true })()`)
+if (report.inboxClicked) { const p = await ev("window.__inboxPos"); await click(p.x, p.y) }
+await wait(1200)
+await shot("09-inbox")
+report.inboxRows = await ev("document.querySelectorAll('li button').length")
+
+report.nonLoopback = netUrls.filter((u) => !/^(https?|ws):\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(u))
+report.requests = netUrls.length
+report.exceptions = consoleErrors.slice(0, 5)
+report.consoleErrors = consoleLogs.slice(0, 6)
+report.log = logLines.filter((l) => /blocked|Error|error/.test(l)).slice(0, 8)
+fs.writeFileSync(path.join(SHOTS, "report.json"), JSON.stringify(report, null, 1))
+console.log(JSON.stringify(report, null, 1))
+ws.close()
+proc.kill()
+await wait(300)
+server.close()
+process.exit(0)

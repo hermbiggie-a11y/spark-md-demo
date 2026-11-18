@@ -1,0 +1,155 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./styles/report-md.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", "Inter Variable", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-run: var(--run);
+  --color-run-soft: var(--run-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-replay: var(--replay);
+  --color-replay-soft: var(--replay-soft);
+  --color-alert: var(--alert);
+  --color-alert-soft: var(--alert-soft);
+  --color-well: var(--well);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --win-radius: 10px;
+  --titlebar-h: 40px;
+  --footer-h: 28px;
+  --sidebar-width: 240px;
+  --inspector-w: 380px;
+  --chat-w: 300px;
+  --brand-paper: #EEF4ED;
+  --brand-mist: #8DA9C4;
+  --brand-blue: #134074;
+  --brand-stone: #13315C;
+  --brand-ink: #0B2545;
+  --background: var(--brand-paper);
+  --foreground: var(--brand-ink);
+  --card: var(--brand-paper);
+  --card-foreground: var(--brand-ink);
+  --popover: var(--brand-paper);
+  --popover-foreground: var(--brand-ink);
+  --primary: var(--brand-blue);
+  --primary-foreground: var(--brand-paper);
+  --secondary: color-mix(in srgb, var(--brand-mist) 20%, var(--brand-paper));
+  --secondary-foreground: var(--brand-stone);
+  --muted: var(--secondary);
+  --muted-foreground: color-mix(in srgb, var(--brand-stone) 80%, var(--brand-paper));
+  --accent: color-mix(in srgb, var(--brand-mist) 30%, var(--brand-paper));
+  --accent-foreground: var(--brand-ink);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: color-mix(in srgb, var(--brand-mist) 55%, var(--brand-paper));
+  --input: var(--border);
+  --ring: var(--brand-blue);
+  --sidebar: color-mix(in srgb, var(--brand-mist) 10%, var(--brand-paper));
+  --sidebar-foreground: var(--brand-ink);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--brand-blue);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --run: #1d4ed8; --run-soft: #dbeafe;
+  --ok: #15803d; --ok-soft: #dcfce7;
+  --warn: #b45309; --warn-soft: #fef3c7;
+  --replay: #6d28d9; --replay-soft: #ede9fe;
+  --alert: #b91c1c; --alert-soft: #fee2e2;
+  --well: #0b0d10;
+}
+
+.dark {
+  --background: var(--brand-ink);
+  --foreground: var(--brand-paper);
+  --card: var(--brand-stone);
+  --card-foreground: var(--brand-paper);
+  --popover: var(--brand-stone);
+  --popover-foreground: var(--brand-paper);
+  --primary: var(--brand-mist);
+  --primary-foreground: var(--brand-ink);
+  --secondary: var(--brand-stone);
+  --secondary-foreground: var(--brand-paper);
+  --muted: var(--brand-stone);
+  --muted-foreground: var(--brand-mist);
+  --accent: var(--brand-blue);
+  --accent-foreground: var(--brand-paper);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: color-mix(in srgb, var(--brand-mist) 35%, var(--brand-ink));
+  --input: color-mix(in srgb, var(--brand-mist) 50%, var(--brand-ink));
+  --ring: var(--brand-mist);
+  --sidebar: var(--brand-stone);
+  --sidebar-foreground: var(--brand-paper);
+  --sidebar-accent: var(--brand-blue);
+  --sidebar-accent-foreground: var(--brand-paper);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --run: #93b4ff; --run-soft: #1e2d5a;
+  --ok: #6ee7a0; --ok-soft: #12351f;
+  --warn: #fbbf6a; --warn-soft: #3a2a0c;
+  --replay: #c4b5fd; --replay-soft: #2e2150;
+  --alert: #fca5a5; --alert-soft: #45161a;
+  --well: #07080a;
+}
+html.maximized { --win-radius: 0px; }
+
+/* Thin scrollbars in every panel; the app itself never scrolls the window. */
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--muted-foreground), transparent 72%); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--muted-foreground), transparent 50%); }
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  /* Brand-tinted shell backing fills the gutters and rounded cutouts around the main surface.
+     Square corners when maximized/fullscreen (html.maximized). */
+  body { @apply bg-transparent text-foreground font-sans; overflow: hidden; }
+  #root { background: var(--sidebar); border-radius: var(--win-radius); }
+  html, body, #root { height: 100vh; }
+}
+
+.drag { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+@media (max-width: 1550px) {
+  :root { --inspector-w: 352px; --chat-w: 264px; }
+}

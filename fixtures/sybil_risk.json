@@ -1,0 +1,5 @@
+{
+ "model": "sybil_ensemble",
+ "notes": "Not shipped in the Dell copy: the precomputed Sybil scores are left out until the Sybil licence is confirmed. With no patients the research risk card renders nothing. Regenerate with scripts/sybil_precompute.py if you install Sybil yourself.",
+ "patients": {}
+}
